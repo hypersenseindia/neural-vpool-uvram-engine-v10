@@ -1,13 +1,19 @@
 #!/data/data/com.termux/files/usr/bin/env bash
 # HypersenseFinal_AutoStart.sh
-# HypersenseIndia — Final Release
-# Developer: AG HYDRAX  | Instagram: @hydraxff_yt
-# Non-root, Termux-safe, Activation-bound, Auto-start & Watchdog
-set -o errexit
-set -o nounset
-set -o pipefail
+# HypersenseIndia — Final Release (v10 Ultra Stable)
+# Developer: AG HYDRAX  | Marketing Head: Roobal Sir (@roobal_sir)
+# Non-root, Termux-safe, Activation-bound (simple expiry only), Auto-start & Watchdog
+# ------------------------------------------------------------------------------
+# Usage:
+# 1) chmod +x HypersenseFinal_AutoStart.sh
+# 2) ./HypersenseFinal_AutoStart.sh
+# 3) Use menu -> 8 -> Enable Auto-Start (Termux:Boot)
+# ------------------------------------------------------------------------------
 
-### ---------- PATH & FILES ----------
+set -o pipefail
+trap 'echo "[FATAL] Error at line $LINENO" >> "$HOME/.hypersense/logs/engine.log" 2>/dev/null || true' ERR
+
+### ---------- PATHS & GLOBALS ----------
 HYP_DIR="$HOME/.hypersense"
 LOG_DIR="$HYP_DIR/logs"
 CFG_FILE="$HYP_DIR/config.cfg"
@@ -19,14 +25,14 @@ ENGINE_LOG="$LOG_DIR/engine.log"
 AI_FPS_LOG="$LOG_DIR/ai_fps_boost.log"
 MONITOR_TMP="$HYP_DIR/monitor.tmp"
 PID_FILE="$HYP_DIR/neural.pid"
-ROTATE_LINES=1500
+ROTATE_LINES=2000
 
 mkdir -p "$HYP_DIR" "$LOG_DIR" "$BOOT_DIR"
 touch "$ENGINE_LOG" "$AI_FPS_LOG"
 chmod 700 "$HYP_DIR"
 chmod 600 "$ENGINE_LOG" "$AI_FPS_LOG" 2>/dev/null || true
 
-### ---------- SAFE HELPERS ----------
+### ---------- HELPERS ----------
 safe_echo(){ printf "%s\n" "$*"; }
 info(){ safe_echo "[INFO] $*" | tee -a "$ENGINE_LOG"; }
 warn(){ safe_echo "[WARN] $*" | tee -a "$ENGINE_LOG"; }
@@ -40,7 +46,6 @@ sha256_hash() {
   fi
 }
 
-# Device id: prefer Android ID if available (Termux), else hostname
 get_device_id(){
   if command -v settings >/dev/null 2>&1; then
     val=$(settings get secure android_id 2>/dev/null || echo "")
@@ -49,25 +54,37 @@ get_device_id(){
   hostname 2>/dev/null || uname -n 2>/dev/null || echo "unknown_device"
 }
 
-# Termux:API safe wrappers (no crash)
-termux_api_available(){
-  command -v termux-battery-status >/dev/null 2>&1
-}
+termux_api_available(){ command -v termux-battery-status >/dev/null 2>&1; }
+
 get_battery_safe(){
   if termux_api_available; then
-    # parse JSON safely
     if command -v jq >/dev/null 2>&1; then
       termux-battery-status 2>/dev/null | jq -r '.percentage // "N/A"' 2>/dev/null || echo "N/A"
     else
-      # fallback without jq: crude parse
       termux-battery-status 2>/dev/null | awk -F: '/percentage/ {gsub(/[", ]/,"",$2); print $2; exit}' || echo "N/A"
     fi
   else
     echo "N/A"
   fi
 }
+
+get_charge_state_safe(){
+  if termux_api_available; then
+    if command -v jq >/dev/null 2>&1; then
+      termux-battery-status 2>/dev/null | jq -r '.status // "N/A"' 2>/dev/null || echo "N/A"
+    else
+      termux-battery-status 2>/dev/null | awk -F: '/status/ {gsub(/[", ]/,"",$2); print $2; exit}' || echo "N/A"
+    fi
+  else
+    if [ -f /sys/class/power_supply/battery/status ]; then
+      cat /sys/class/power_supply/battery/status 2>/dev/null || echo "N/A"
+    else
+      echo "N/A"
+    fi
+  fi
+}
+
 get_temp_safe(){
-  # prefer thermal sysfs when possible
   for tz in /sys/class/thermal/thermal_zone*/temp; do
     [ -f "$tz" ] || continue
     val=$(cat "$tz" 2>/dev/null || echo "")
@@ -76,7 +93,6 @@ get_temp_safe(){
       return
     }
   done
-  # termux-battery fallback
   if termux_api_available; then
     if command -v jq >/dev/null 2>&1; then
       tmp=$(termux-battery-status 2>/dev/null | jq -r '.temperature // empty' 2>/dev/null || echo "")
@@ -89,7 +105,6 @@ get_temp_safe(){
   echo "N/A"
 }
 
-# refresh detection (robust)
 get_refresh_rate() {
   if command -v dumpsys >/dev/null 2>&1; then
     r=$(dumpsys SurfaceFlinger 2>/dev/null | grep -oE "[0-9]+(\.[0-9]+)? Hz" | head -n1 | sed 's/ Hz//' || true)
@@ -97,13 +112,6 @@ get_refresh_rate() {
     r=$(dumpsys display 2>/dev/null | grep -oE "activeRefreshRate=[0-9]+" | head -n1 | cut -d= -f2 || true)
     [ -n "$r" ] && { echo "$r"; return; }
   fi
-  # sysfs try
-  val=$(find /sys/devices -maxdepth 4 -type f -iname "*refresh*" -print 2>/dev/null | head -n1 || true)
-  [ -n "$val" ] && {
-    r=$(cat "$val" 2>/dev/null || echo "")
-    if echo "$r" | grep -q "000$"; then expr "$r" / 1000 2>/dev/null || echo "$r"; else echo "$r"; fi
-    return
-  }
   echo "60"
 }
 
@@ -118,7 +126,7 @@ rotate_log(){
 
 ### ---------- DEFAULT CONFIG ----------
 default_config(){
-  cat > "$CFG_FILE" <<EOF
+  cat > "$CFG_FILE" <<'EOF'
 touch_x=12
 touch_y=12
 touch_smooth=1.0
@@ -135,16 +143,13 @@ thermal_soft=45
 thermal_hard=50
 sample_interval_ms=300
 micro_trigger_ms=120
-game_whitelist=com.dts.freefire,com.dts.freefiremax,com.pubg.imobile,com.tencent.ig,com.konami.pes2019
+game_whitelist="com.dts.freefire,com.dts.freefiremax,com.pubg.imobile,com.tencent.ig,com.konami.pes2019"
 EOF
   chmod 600 "$CFG_FILE"
 }
 [ -f "$CFG_FILE" ] || default_config
-# load config
-# shellcheck disable=SC1090
-. "$CFG_FILE"
+. "$CFG_FILE" 2>/dev/null || true
 
-# ensure safe variables (defaults if missing)
 : "${touch_x:=12}" : "${touch_y:=12}" : "${touch_smooth:=1.0}"
 : "${neural_turbo:=0}" : "${arc_plus:=0}" : "${vpool_enabled:=0}" : "${uvram_enabled:=0}"
 : "${afb_mode:=Auto}" : "${autostart_enabled:=0}"
@@ -176,10 +181,11 @@ EOF
   chmod 600 "$CFG_FILE"
 }
 
-### ---------- ACTIVATION ----------
+### ---------- ACTIVATION (simple expiry only) ----------
+# Token format (base64): username|plan|YYYYMMDD|acttime
 prompt_activation(){
   if command -v dialog >/dev/null 2>&1; then
-    dialog --msgbox "HYPERSENSEINDIA\nDeveloper: AG HYDRAX\nInstagram: @hydraxff_yt\n\nActivation required." 10 60
+    dialog --msgbox "HYPERSENSEINDIA\nDeveloper: AG HYDRAX\nMarketing Head: Roobal Sir (@roobal_sir)\n\nActivation required." 10 60
   else
     safe_echo "HYPERSENSEINDIA - Activation required."
   fi
@@ -201,11 +207,7 @@ prompt_activation(){
 
     decoded=$(printf "%s" "$code_input" | base64 -d 2>/dev/null || echo "")
     if [ -z "$decoded" ]; then
-      if command -v dialog >/dev/null 2>&1; then
-        dialog --msgbox "Invalid token (not base64 or corrupted). Try again." 7 60
-      else
-        echo "Invalid token. Try again."
-      fi
+      command -v dialog >/dev/null 2>&1 && dialog --msgbox "Invalid token (not base64 or corrupted). Try again." 7 60 || echo "Invalid token. Try again."
       continue
     fi
 
@@ -215,18 +217,20 @@ prompt_activation(){
     acttime=$(printf "%s" "$decoded" | awk -F'|' '{print $4}')
 
     if ! [[ "$expiry" =~ ^[0-9]{8}$ ]]; then
-      if command -v dialog >/dev/null 2>&1; then dialog --msgbox "Token format invalid (expiry)." 7 60; else echo "Token format invalid."; fi
+      command -v dialog >/dev/null 2>&1 && dialog --msgbox "Token format invalid (expiry)." 7 60 || echo "Token format invalid."
       continue
     fi
 
     current=$(date +%Y%m%d)
     if (( current > expiry )); then
-      if command -v dialog >/dev/null 2>&1; then dialog --msgbox "Activation expired on $expiry." 7 60; else echo "Activation expired."; fi
+      command -v dialog >/dev/null 2>&1 && dialog --msgbox "Activation expired on $expiry." 7 60 || echo "Activation expired."
       continue
     fi
 
     dev=$(get_device_id)
     devhash=$(sha256_hash "$dev")
+
+    mkdir -p "$(dirname "$ACT_FILE")"
     cat > "$ACT_FILE" <<EOF
 username=$username
 plan=$plan
@@ -237,26 +241,55 @@ act_time=$acttime
 EOF
     chmod 600 "$ACT_FILE"
     info "Activated user=$username plan=$plan expiry=$expiry device=$dev"
-    if command -v dialog >/dev/null 2>&1; then
-      dialog --msgbox "Activation successful!\nUser: $username\nPlan: $plan\nExpiry: $expiry" 8 60
-    else
-      echo "Activation successful!"
-    fi
+    command -v dialog >/dev/null 2>&1 && dialog --msgbox "Activation successful!\nUser: $username\nPlan: $plan\nExpiry: $expiry" 8 60 || echo "Activation successful!"
     return 0
   done
 }
 
 check_activation(){
-  if [ ! -f "$ACT_FILE" ]; then return 1; fi
-  . "$ACT_FILE"
-  if ! [[ "$expiry" =~ ^[0-9]{8}$ ]]; then return 1; fi
+  if [ ! -f "$ACT_FILE" ]; then
+    return 1
+  fi
+  . "$ACT_FILE" 2>/dev/null || return 1
+  if ! [[ "$expiry" =~ ^[0-9]{8}$ ]]; then
+    return 1
+  fi
   current=$(date +%Y%m%d)
-  if (( current > expiry )); then return 2; fi
-  if [ "$(sha256_hash "$(get_device_id)")" != "$device_hash" ]; then return 3; fi
+  if (( current > expiry )); then
+    return 2
+  fi
+  if [ "$(sha256_hash "$(get_device_id)")" != "$device_hash" ]; then
+    return 3
+  fi
   return 0
 }
 
-### ---------- ENGINE WORKER (write file) ----------
+show_activation_status(){
+  check_activation
+  r=$?
+  case $r in
+    0)
+      . "$ACT_FILE" 2>/dev/null || true
+      msg="Activation: VALID\nUser: ${username:-N/A}\nPlan: ${plan:-N/A}\nExpiry: ${expiry:-N/A}"
+      ;;
+    2)
+      msg="Activation: EXPIRED\nPlease re-activate."
+      ;;
+    3)
+      msg="Activation: DEVICE MISMATCH\nKey not for this device."
+      ;;
+    1|*)
+      msg="Activation: NOT PRESENT. Please activate."
+      ;;
+  esac
+  if command -v dialog >/dev/null 2>&1; then
+    dialog --msgbox "$msg" 9 60
+  else
+    echo -e "$msg"
+  fi
+}
+
+### ---------- ENGINE WORKER ----------
 write_engine_worker(){
   cat > "$ENGINE_SCRIPT" <<'EOE'
 #!/data/data/com.termux/files/usr/bin/env bash
@@ -272,12 +305,12 @@ echo $$ > "$PID_FILE"
 log(){ printf "%s | %s\n" "$(date '+%F %T')" "$*" >> "$LOG"; }
 ailog(){ printf "%s | %s\n" "$(date '+%F %T')" "$*" >> "$AI_LOG"; }
 
-# read config safely
 [ -f "$CFG" ] && . "$CFG"
 : "${neural_turbo:=0}" : "${arc_plus:=0}" : "${vpool_enabled:=0}" : "${uvram_enabled:=0}" : "${afb_mode:=Auto}"
 : "${idle_target:=70}" : "${active_target:=95}" : "${cpu_threshold:=45}"
 : "${thermal_soft:=45}" : "${thermal_hard:=50}"
 : "${sample_interval_ms:=300}" : "${micro_trigger_ms:=120}"
+: "${game_whitelist:=com.dts.freefire,com.dts.freefiremax,com.pubg.imobile,com.tencent.ig,com.konami.pes2019}"
 
 get_bat(){ if command -v termux-battery-status >/dev/null 2>&1; then termux-battery-status 2>/dev/null | awk -F: '/percentage/ {gsub(/[", ]/,"",$2); print $2; exit}'; else echo "N/A"; fi }
 get_temp_local(){
@@ -285,40 +318,95 @@ get_temp_local(){
   echo "N/A"
 }
 
-ai_estimate(){
-  CPU_LOAD=$(top -bn1 | awk '/CPU/ {print $2; exit}' 2>/dev/null | sed 's/%//' || echo 30)
-  [ -z "$CPU_LOAD" ] && CPU_LOAD=30
-  TEMP_RAW=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null || echo "")
-  if [ -n "$TEMP_RAW" ]; then
-    if [ "${#TEMP_RAW}" -gt 3 ]; then TEMP=$(expr "$TEMP_RAW" / 1000); else TEMP="$TEMP_RAW"; fi
-  else TEMP=35; fi
-  CPU_GAIN=$((100 - CPU_LOAD))
-  THERMAL_HEADROOM=$((75 - TEMP)); [ "$THERMAL_HEADROOM" -lt 0 ] && THERMAL_HEADROOM=0
-  GPU_FREQ=$(cat /sys/class/kgsl/kgsl-3d0/gpuclk 2>/dev/null || echo 0)
-  if [ "$GPU_FREQ" -gt 0 ]; then GPU_GAIN=$((GPU_FREQ / 100000)); else GPU_GAIN=5; fi
-  BOOST_SCORE=$(( (CPU_GAIN + GPU_GAIN + THERMAL_HEADROOM) / 3 ))
-  RR=$(dumpsys SurfaceFlinger 2>/dev/null | grep -oE "[0-9]+(\.[0-9]+)? Hz" | head -n1 | sed 's/ Hz//' || echo 60)
-  EST=$(awk -v b="$BOOST_SCORE" -v r="$RR" 'BEGIN{printf "%.1f", (b * r / 100)}')
-  ailog "CPU:$CPU_LOAD% TEMP:${TEMP}C BOOST:$BOOST_SCORE EST_FPS_GAIN:+$EST"
+is_charging(){
+  cs="N/A"
+  if command -v termux-battery-status >/dev/null 2>&1; then
+    cs=$(termux-battery-status 2>/dev/null | awk -F: '/status/ {gsub(/[", ]/,"",$2); print $2; exit}' || echo "N/A")
+  elif [ -f /sys/class/power_supply/battery/status ]; then
+    cs=$(cat /sys/class/power_supply/battery/status 2>/dev/null || echo "N/A")
+  fi
+  case "$cs" in
+    Charging|CHARGING|Topup|Full|Unknown) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
-# main loop with sleep/backoff
-while true; do
-  [ -f "$CFG" ] && . "$CFG"
-  BAT=$(get_bat)
-  TEMP=$(get_temp_local)
-  log "tick | bat:${BAT}% | temp:${TEMP}C | turbo:${neural_turbo} arc:${arc_plus} vpool:${vpool_enabled} uvr:${uvram_enabled} afb:${afb_mode}"
-  # AI estimation log
-  ai_estimate
-  # battery safety
-  if [ "$BAT" != "N/A" ] && [ "$BAT" -lt 15 ]; then
-    log "Battery <15%: throttling predictions"
-    sleep 5
-    continue
+get_foreground_app_safe(){
+  if command -v dumpsys >/dev/null 2>&1; then
+    fg=$(dumpsys activity activities 2>/dev/null | awk -F' ' '/mResumedActivity|mFocusedActivity/ {print $NF; exit}' | cut -d'/' -f1)
+    [ -z "$fg" ] && fg=$(dumpsys window windows 2>/dev/null | awk -F' ' '/mCurrentFocus|mFocusedApp/ {print $3; exit}' | cut -d'/' -f1)
+    echo "${fg:-}"
+    return
   fi
-  # throttle loop interval based on turbo state
-  if [ "${neural_turbo:-0}" -eq 1 ]; then sleep 1; else sleep 2; fi
-done
+  echo ""
+}
+
+is_game_foreground(){
+  fg=$(get_foreground_app_safe)
+  [ -z "$fg" ] && return 1
+  IFS=','; for pkg in $game_whitelist; do [ "$pkg" = "$fg" ] && return 0; done
+  return 1
+}
+
+apply_safe_profile(){
+  mode="$1"
+  log "Apply profile: $mode | turbo:$neural_turbo arc:$arc_plus vpool:$vpool_enabled uvr:$uvram_enabled"
+  case "$mode" in
+    CHARGING_ONLY)
+      ailog "CHARGING_ONLY: Eco thermal profile applied"
+      ;;
+    CHARGING_GAMING)
+      ailog "CHARGING_GAMING: Boost with thermal guard"
+      ;;
+    NORMAL)
+      ailog "NORMAL: Regular performance"
+      ;;
+  esac
+}
+
+thermal_guard(){
+  TEMP_RAW=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null || echo "")
+  if [ -z "$TEMP_RAW" ]; then
+    return 0
+  fi
+  if [ "${#TEMP_RAW}" -gt 3 ]; then
+    TEMP=$(awk "BEGIN{print $TEMP_RAW/1000}")
+  else
+    TEMP="$TEMP_RAW"
+  fi
+  if (( $(awk "BEGIN{print ($TEMP >= $thermal_hard)}") )); then
+    log "Thermal HARD reached (${TEMP}C): forcing safe-idle"
+    neural_turbo=0; arc_plus=0
+    ailog "Thermal HARD: safe-idle enforced"
+  elif (( $(awk "BEGIN{print ($TEMP >= $thermal_soft)}") )); then
+    log "Thermal SOFT reached (${TEMP}C): reduce aggressiveness"
+    neural_turbo=0
+    ailog "Thermal SOFT: reduced turbo"
+  fi
+}
+
+ai_loop(){
+  while true; do
+    [ -f "$CFG" ] && . "$CFG"
+    BAT=$(get_bat)
+    TEMP=$(get_temp_local)
+    if is_charging; then charging="YES"; else charging="NO"; fi
+    if is_game_foreground; then gaming="YES"; else gaming="NO"; fi
+    if [ "$charging" = "YES" ] && [ "$gaming" = "YES" ]; then
+      apply_safe_profile "CHARGING_GAMING"
+    elif [ "$charging" = "YES" ] && [ "$gaming" = "NO" ]; then
+      apply_safe_profile "CHARGING_ONLY"
+    else
+      apply_safe_profile "NORMAL"
+    fi
+    thermal_guard
+    ailog "BAT:${BAT}% TMP:${TEMP}C CHG:${charging} GAME:${gaming} turbo:${neural_turbo} arc:${arc_plus}"
+    sleep 2
+  done
+}
+
+echo $$ > "$PID_FILE"
+ai_loop
 EOE
 
   chmod 700 "$ENGINE_SCRIPT"
@@ -333,11 +421,15 @@ is_engine_running(){
 }
 
 start_engine(){
-  check_activation || { warn "Start blocked: activation invalid."; return 2; }
+  check_activation
+  r=$?
+  if [ $r -ne 0 ]; then
+    warn "Engine start blocked: activation invalid (code $r)."
+    return 2
+  fi
   if is_engine_running; then info "Engine already running (pid $(cat "$PID_FILE"))"; return 0; fi
   [ -f "$ENGINE_SCRIPT" ] || write_engine_worker
   nohup bash "$ENGINE_SCRIPT" >> "$ENGINE_LOG" 2>&1 &
-  # wait for PID to appear (engine writes PID)
   for i in {1..10}; do sleep 0.3; is_engine_running && break; done
   if is_engine_running; then info "Engine started (pid $(cat "$PID_FILE"))"; return 0; else err "Engine failed to start"; return 1; fi
 }
@@ -382,7 +474,7 @@ install_autostart(){
 #!/data/data/com.termux/files/usr/bin/env bash
 # Hypersense autostart
 sleep 6
-bash "$HYP_DIR/$(basename "$0")" --autostart-run >/dev/null 2>&1 &
+nohup bash "$HYP_DIR/$(basename "$0")" --autostart-run >/dev/null 2>&1 &
 EOF
   chmod 700 "$AUTOSTART_FILE"
   autostart_enabled=1; save_config
@@ -424,12 +516,12 @@ monitor_status(){
     printf "HYPERSENSE Monitor — %s\n\n" "$(date '+%F %T')"
     if check_activation; then
       echo "Activation: VALID"
-      . "$ACT_FILE"
-      echo "User: $username"
-      echo "Plan: $plan"
-      echo "Expiry: $expiry"
+      . "$ACT_FILE" 2>/dev/null
+      echo "User: ${username:-N/A}"
+      echo "Plan: ${plan:-N/A}"
+      echo "Expiry: ${expiry:-N/A}"
     else
-      echo "Activation: NOT ACTIVE"
+      echo "Activation: NOT ACTIVE or EXPIRED"
     fi
     echo ""
     echo "Neural Turbo:   $( [ "$neural_turbo" -eq 1 ] && echo "ON" || echo "OFF")"
@@ -470,7 +562,6 @@ set_touch_values(){
   X=${X:-$touch_x}; Y=${Y:-$touch_y}; S=${S:-$touch_smooth}
   if ! [[ "$X" =~ ^[0-9]+$ ]] || [ "$X" -lt 1 ] || [ "$X" -gt 20 ]; then X=$touch_x; fi
   if ! [[ "$Y" =~ ^[0-9]+$ ]] || [ "$Y" -lt 1 ] || [ "$Y" -gt 20 ]; then Y=$touch_y; fi
-  # S numeric test
   if ! awk "BEGIN{exit !(($S+0)==$S)}" 2>/dev/null; then S=$touch_smooth; fi
   touch_x=$X; touch_y=$Y; touch_smooth=$S
   save_config
@@ -598,13 +689,12 @@ advanced_menu(){
 
 ### ---------- MAIN MENU ----------
 main_menu(){
-  # Ensure activation
   if ! check_activation; then prompt_activation; fi
   [ -f "$ENGINE_SCRIPT" ] || write_engine_worker
   rotate_log "$ENGINE_LOG"; rotate_log "$AI_FPS_LOG"
 
   while true; do
-    . "$CFG_FILE"
+    . "$CFG_FILE" 2>/dev/null
     ACT_TEXT="Not Active"; is_engine_running && ENG_TEXT="ON (pid $(cat "$PID_FILE"))" || ENG_TEXT="OFF"
     check_activation && ACT_TEXT="Active"
 
@@ -636,7 +726,7 @@ main_menu(){
             1) enable_neural_turbo; dialog --msgbox "Neural Engine ENABLED (All-in-one)" 6 50 ;;
             2) disable_neural_turbo; dialog --msgbox "Neural Engine DISABLED" 5 50 ;;
             3) dialog --msgbox "Recoil mode applied (see Advanced for presets)" 6 50 ;;
-            4) advanced_menu ;; # reuse advanced A4
+            4) advanced_menu ;; 
             5) dialog --msgbox "Thermal Guardian active (Advanced→A8 to configure)" 6 50 ;;
           esac
         else
@@ -692,7 +782,7 @@ main_menu(){
       9) monitor_status ;;
       10) advanced_menu ;;
       11)
-        if [ -f "$ACT_FILE" ]; then mv "$ACT_FILE" "${ACT_FILE}.backup"; fi
+        if [ -f "$ACT_FILE" ]; then cp "$ACT_FILE" "${ACT_FILE}.backup" 2>/dev/null || true; fi
         default_config; save_config; rm -f "$ENGINE_LOG" "$AI_FPS_LOG" "$PID_FILE" 2>/dev/null || true
         mkdir -p "$LOG_DIR"
         command -v dialog >/dev/null 2>&1 && dialog --msgbox "Defaults restored (activation preserved if present)." 6 60 || echo "Defaults restored."
@@ -703,10 +793,10 @@ main_menu(){
   done
 }
 
-### ---------- AUTOSTART RUN (non-interactive) ----------
+### ---------- AUTOSTART RUN ----------
 if [ "${1:-}" = "--autostart-run" ]; then
   if check_activation; then
-    . "$CFG_FILE"
+    . "$CFG_FILE" 2>/dev/null
     start_engine || info "Autostart engine start failed"
   else
     info "Autostart: activation missing; exit"
@@ -722,11 +812,7 @@ else
   safe_echo "HYPERSENSEINDIA - Neural Core Engine - Final Release"
 fi
 
-# ensure engine worker exists
 [ -f "$ENGINE_SCRIPT" ] || write_engine_worker
-
-# rotate logs lightly
 rotate_log "$ENGINE_LOG"; rotate_log "$AI_FPS_LOG"
 
-# Run menu
 main_menu
